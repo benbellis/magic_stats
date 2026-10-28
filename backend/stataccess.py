@@ -5,7 +5,7 @@
 import pandas as pd
 from sqlalchemy import MetaData, select, create_engine, func
 from backend.statfunctions import colorInt,archLabelToID, archIDtoLabel, meanDecklist, cardInfo
-import os
+import os, json
 from dotenv import load_dotenv
 load_dotenv()
 db_url=os.getenv("DATABASE_URL")
@@ -20,7 +20,6 @@ def getActiveSets():
     metadata.reflect(bind=engine)
     sets_table=metadata.tables['ActiveSets']
     output=pd.read_sql_table(sets_table.name,conn).to_json()
-    conn.close()
     return output
 def getMostRecentSet():
     #Returns the abbreviation and name for the most recent set in the database by release date.
@@ -533,6 +532,8 @@ def getRandomSampleDecklist(set_abbr:str, arch_label:str, min_wins=0, max_wins=7
     select_args=[]
     for card_name in cardSeries['name']:
         select_args.append(getattr(deck_table.c,card_name).label(card_name))
+    select_args.append(deck_table.c.wins)
+    select_args.append(deck_table.c.games)
     s=select(*select_args)
     if min_wins>0:
         s=s.where(deck_table.c.wins>=min_wins)
@@ -549,8 +550,24 @@ def getRandomSampleDecklist(set_abbr:str, arch_label:str, min_wins=0, max_wins=7
         s=s.where(deck_table.c.main_colors==arch_label)
     s=s.order_by(func.random()).limit(1)
     resultDF=pd.read_sql_query(s,conn)
+    card_df=cardInfo(conn,set_abbr)
     conn.close()
-    return resultDF.T.to_json()
+    output_dict={}
+    output_dict['record']={'wins':int(resultDF['wins'].values[0]),'losses':int(resultDF['games'].values[0])-int(resultDF['wins'].values[0])}
+    output_dict['decklist']={'lands':{},'creatures':{},'other':{}}
+    for idx in card_df.index:
+        card_name=card_df.at[idx,'name']
+        card_type=card_df.at[idx,'card_type']
+        card_count=resultDF[card_name].values[0]
+        if card_count>0:
+            if 'L' in card_type:
+                output_dict['decklist']['lands'][card_name]=int(card_count)
+            elif 'C' in card_type:
+                output_dict['decklist']['creatures'][card_name]=int(card_count)
+            else:
+                output_dict['decklist']['other'][card_name]=int(card_count)
+    output=json.dumps(output_dict)
+    return output
 
 def getOverperformingCards(set_abbr:str, arch_label:str, n_top=10,exclude_rares=True,as_json=True):
     #Returns the top overperforming cards for a given archetype in a set.
